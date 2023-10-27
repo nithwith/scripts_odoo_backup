@@ -6,22 +6,23 @@ import paramiko
 import subprocess
 from pathlib import Path
 import arrow
+from dotenv import load_dotenv
 
-ODOO_BASE = {
-    'URL': 'https://odoo.theomarty.fr',
-    'DB':'odoo',
-    'USERNAME':'nithwith@gmail.com',
-    'PASSWORD':'marty91090'
-}
-BACKUP_PATH = "backup"
+load_dotenv()
+
+ODOO_URL = os.getenv('ODOO_URL')
+ODOO_DB = os.getenv('ODOO_DB')
+ODOO_USERNAME = os.getenv('ODOO_USERNAME')
+ODOO_PASSWORD = os.getenv('ODOO_PASSWORD')
+BACKUP_PATH = os.getenv('BACKUP_PATH')
 
 
 def get_db_to_backup():
-    common = xmlrpc.client.ServerProxy('{}/xmlrpc/2/common'.format(ODOO_BASE['URL']))
-    uid = common.authenticate(ODOO_BASE['DB'], ODOO_BASE['USERNAME'], ODOO_BASE['PASSWORD'], {})
-    models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(ODOO_BASE['URL']))
-    ids = models.execute_kw(ODOO_BASE['DB'], uid, ODOO_BASE['PASSWORD'], 'project.task', 'search', [[('tag_ids.name', '=', "To backup")]],)
-    return models.execute_kw(ODOO_BASE['DB'], uid, ODOO_BASE['PASSWORD'],'project.task', 'read', [ids], {'fields': ['name']})
+    common = xmlrpc.client.ServerProxy('{}/xmlrpc/2/common'.format(ODOO_URL))
+    uid = common.authenticate(ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, {})
+    models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(ODOO_URL))
+    ids = models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, 'project.task', 'search', [[('tag_ids.name', '=', "To backup")]],)
+    return models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD,'project.task', 'read', [ids], {'fields': ['name']})
 
 def create_logfile():
     log_path = BACKUP_PATH + "/log"
