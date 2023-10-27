@@ -1,8 +1,6 @@
 import xmlrpc.client
-import os, time, datetime
+import os, time, logging, subprocess
 import argparse
-import logging
-import subprocess
 from dotenv import load_dotenv
 import paramiko
 
@@ -16,30 +14,6 @@ SYNOLOGY_URL = os.getenv('SYNOLOGY_URL')
 SYNOLOGY_USERNAME = os.getenv('SYNOLOGY_USERNAME')
 SYNOLOGY_PASSWORD = os.getenv('SYNOLOGY_PASSWORD')
 now = time.time()
-
-class MySFTPClient(paramiko.SFTPClient):
-    def put_dir(self, source, target):
-        ''' Uploads the contents of the source directory to the target path. The
-            target directory needs to exists. All subdirectories in source are 
-            created under target.
-        '''
-        for item in os.listdir(source):
-            if os.path.isfile(os.path.join(source, item)):
-                self.put(os.path.join(source, item), '%s/%s' % (target, item))
-            else:
-                self.mkdir('%s/%s' % (target, item), ignore_existing=True)
-                self.put_dir(os.path.join(source, item), '%s/%s' % (target, item))
-
-    def mkdir(self, path, mode=511, ignore_existing=False):
-        ''' Augments mkdir by adding an option to not fail if the folder exists  '''
-        try:
-            super(MySFTPClient, self).mkdir(path, mode)
-        except IOError:
-            if ignore_existing:
-                pass
-            else:
-                raise
-
 
 def get_file_params():
     argParser = argparse.ArgumentParser()
@@ -101,13 +75,21 @@ def remove_old_backup(db_info,backup_type):
 
 def push_to_synology(logger):
     logger.info('Connect to %s' % (SYNOLOGY_URL))
-    transport = paramiko.Transport((SYNOLOGY_URL, 22))
-    transport.connect(username=SYNOLOGY_USERNAME, password=SYNOLOGY_PASSWORD)
-    sftp = MySFTPClient.from_transport(transport)
-    logger.info('Send backups to %s' % SYNOLOGY_URL)
-    sftp.mkdir("duplicate_backups", ignore_existing=True)
-    sftp.put_dir(BACKUP_PATH, "duplicate_backups")
-    sftp.close()
+    client = paramiko.client.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(SYNOLOGY_URL, username=SYNOLOGY_USERNAME, password=SYNOLOGY_PASSWORD)
+
+    logger.info('Send backups to %s' % (SYNOLOGY_URL))
+    ftp = client.open_sftp()
+    for dirpath, dirnames, filenames in os.walk(BACKUP_PATH):
+        remote_path = os.path.join("duplicate_backups", dirpath[len(BACKUP_PATH)+1:])
+        try:
+            ftp.listdir(remote_path)
+        except IOError:
+            ftp.mkdir(remote_path)
+        for filename in filenames:
+            ftp.put(os.path.join(dirpath, filename), os.path.join(remote_path, filename))
+    ftp.close()
 
 backup_type = get_file_params()
 
@@ -116,13 +98,13 @@ backup_type = get_file_params()
 logger = create_logfile()
 backup_dbs = get_db_to_backup()
 
-# for backup_db in backup_dbs:
-#     db_info =  {
-#         "backup_db_url" : backup_db['name'],
-#         "backup_root_path" : BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
-#     }
-#     make_backup(db_info, backup_type)
-#     remove_old_backup(db_info, backup_type)
+for backup_db in backup_dbs:
+    db_info =  {
+        "backup_db_url" : backup_db['name'],
+        "backup_root_path" : BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
+    }
+    make_backup(db_info, backup_type)
+    remove_old_backup(db_info, backup_type)
 
 push_to_synology(logger)
     
