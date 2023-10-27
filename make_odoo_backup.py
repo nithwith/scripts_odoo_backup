@@ -1,13 +1,9 @@
 import xmlrpc.client
-import os
+import os, time, datetime
 import argparse
-import time, datetime
 import logging
-import paramiko
 import subprocess
-from pathlib import Path
 from dotenv import load_dotenv
-import arrow
 
 load_dotenv()
 ODOO_URL = os.getenv('ODOO_URL')
