@@ -4,6 +4,7 @@ import argparse
 import logging
 import subprocess
 from dotenv import load_dotenv
+import paramiko
 
 load_dotenv()
 ODOO_URL = os.getenv('ODOO_URL')
@@ -11,8 +12,34 @@ ODOO_DB = os.getenv('ODOO_DB')
 ODOO_USERNAME = os.getenv('ODOO_USERNAME')
 ODOO_PASSWORD = os.getenv('ODOO_PASSWORD')
 BACKUP_PATH = os.getenv('BACKUP_PATH')
-
+SYNOLOGY_URL = os.getenv('SYNOLOGY_URL')
+SYNOLOGY_USERNAME = os.getenv('SYNOLOGY_USERNAME')
+SYNOLOGY_PASSWORD = os.getenv('SYNOLOGY_PASSWORD')
 now = time.time()
+
+class MySFTPClient(paramiko.SFTPClient):
+    def put_dir(self, source, target):
+        ''' Uploads the contents of the source directory to the target path. The
+            target directory needs to exists. All subdirectories in source are 
+            created under target.
+        '''
+        for item in os.listdir(source):
+            if os.path.isfile(os.path.join(source, item)):
+                self.put(os.path.join(source, item), '%s/%s' % (target, item))
+            else:
+                self.mkdir('%s/%s' % (target, item), ignore_existing=True)
+                self.put_dir(os.path.join(source, item), '%s/%s' % (target, item))
+
+    def mkdir(self, path, mode=511, ignore_existing=False):
+        ''' Augments mkdir by adding an option to not fail if the folder exists  '''
+        try:
+            super(MySFTPClient, self).mkdir(path, mode)
+        except IOError:
+            if ignore_existing:
+                pass
+            else:
+                raise
+
 
 def get_file_params():
     argParser = argparse.ArgumentParser()
@@ -24,7 +51,6 @@ def get_file_params():
         raise Exception("You need to send the period of the backup (daily or monthly) with -p argument")
     return backup_type
     
-
 def get_db_to_backup():
     common = xmlrpc.client.ServerProxy('{}/xmlrpc/2/common'.format(ODOO_URL))
     uid = common.authenticate(ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, {})
@@ -73,15 +99,15 @@ def remove_old_backup(db_info,backup_type):
         if filestamp <  critical_time:
             os.remove(os.path.join(db_info['backup_root_path'], filename))
 
-def push_to_synology():
-    print('hello')
-    # ssh = paramiko.SSHClient() 
-    # ssh.load_host_keys(os.path.expanduser(os.path.join("~", ".ssh", "known_hosts")))
-    # ssh.connect(server, username=username, password=password)
-    # sftp = ssh.open_sftp()
-    # sftp.put(localpath, remotepath)
-    # sftp.close()
-    # ssh.close()
+def push_to_synology(logger):
+    logger.info('Connect to %s' % (SYNOLOGY_URL))
+    transport = paramiko.Transport((SYNOLOGY_URL, 22))
+    transport.connect(username=SYNOLOGY_USERNAME, password=SYNOLOGY_PASSWORD)
+    sftp = MySFTPClient.from_transport(transport)
+    logger.info('Send backups to %s' % SYNOLOGY_URL)
+    sftp.mkdir("duplicate_backups", ignore_existing=True)
+    sftp.put_dir(BACKUP_PATH, "duplicate_backups")
+    sftp.close()
 
 backup_type = get_file_params()
 
@@ -90,16 +116,17 @@ backup_type = get_file_params()
 logger = create_logfile()
 backup_dbs = get_db_to_backup()
 
-for backup_db in backup_dbs:
-    db_info =  {
-        "backup_db_url" : backup_db['name'],
-        "backup_root_path" : BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
-    }
-    make_backup(db_info, backup_type)
-    remove_old_backup(db_info, backup_type)
+# for backup_db in backup_dbs:
+#     db_info =  {
+#         "backup_db_url" : backup_db['name'],
+#         "backup_root_path" : BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
+#     }
+#     make_backup(db_info, backup_type)
+#     remove_old_backup(db_info, backup_type)
 
+push_to_synology(logger)
     
-    
+
 
 
 
