@@ -50,7 +50,7 @@ backup_dbs = get_db_to_backup()
 
 for backup_db in backup_dbs:
     backup_db_url = backup_db['name']
-    db_path = BACKUP_PATH + "/last_days_backup/" + backup_db_url
+    db_path = BACKUP_PATH +"/"+ backup_db_url + "/last_days_backup"
     if not os.path.isdir(db_path):
         os.makedirs(db_path)
 
@@ -60,14 +60,14 @@ for backup_db in backup_dbs:
 
     subprocess.run(["curl", "-X", "POST", '-F', 'master_pwd=pPaJncYL8MgqSt', '-F', 'name=odoo', '-F', 'backup_format=zip', '-o', 
                     backup_path, backup_url],stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT)
-    logger.info('Let s Backup %s' % (backup_db))
+    logger.info('Let s Backup %s' % (backup_db_url))
 
 
     if subprocess.run(["curl", "-X", "POST", '-F', 'master_pwd=pPaJncYL8MgqSt', '-F', 'name=odoo' '-F', 'backup_format=zip', '-o', 
                        backup_path, backup_url],stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT).returncode == 0:
-        logger.info('End of %s Backup' % (backup_db))
+        logger.info('End of %s Backup' % (backup_db_url))
 
-    logger.info('Remove old backup of %s' % (backup_db))
+    logger.info('Remove old backup of %s' % (backup_db_url))
 
     critical_time = arrow.now().shift(days=-1)
 
@@ -78,7 +78,7 @@ for backup_db in backup_dbs:
             os.remove(item)
             pass
     
-    logger.info('End for %s backups' % (backup_db))
+    logger.info('End for %s backups' % (backup_db_url))
 
 
 
