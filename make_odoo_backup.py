@@ -87,6 +87,13 @@ def push_to_synology(logger):
             ftp.listdir(remote_path)
         except IOError:
             ftp.mkdir(remote_path)
+
+        #Remove old backups
+        ftp.cwd(remote_path)
+        for file in ftp.nlst():
+            ftp.delete(file)
+            
+        #Push new backups
         for filename in filenames:
             ftp.put(os.path.join(dirpath, filename), os.path.join(remote_path, filename))
     ftp.close()
