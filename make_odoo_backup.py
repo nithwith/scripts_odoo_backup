@@ -107,9 +107,6 @@ backup_type = get_file_params()
 logger = create_logfile()
 backup_dbs = get_db_to_backup()
 
-push_to_synology(logger)
-
-
 for backup_db in backup_dbs:
     db_info =  {
         "backup_db_url" : backup_db['name'],
