@@ -3,6 +3,7 @@ import os, time, logging, subprocess
 import argparse
 from dotenv import load_dotenv
 import paramiko
+from scp import SCPClient
 
 load_dotenv()
 ODOO_URL = os.getenv('ODOO_URL')
@@ -75,28 +76,29 @@ def remove_old_backup(db_info,backup_type):
 
 def push_to_synology(logger):
     logger.info('Connect to %s' % (SYNOLOGY_URL))
-    client = paramiko.client.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(SYNOLOGY_URL, username=SYNOLOGY_USERNAME, password=SYNOLOGY_PASSWORD)
+    ssh = paramiko.client.SSHClient()
+    ssh.load_system_host_keys()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(SYNOLOGY_URL, username=SYNOLOGY_USERNAME, password=SYNOLOGY_PASSWORD)
 
     logger.info('Send backups to %s' % (SYNOLOGY_URL))
-    ftp = client.open_sftp()
-    for dirpath, dirnames, filenames in os.walk(BACKUP_PATH):
-        remote_path = os.path.join("duplicate_backups", dirpath[len(BACKUP_PATH)+1:])
-        try:
-            ftp.listdir(remote_path)
-        except IOError:
-            ftp.mkdir(remote_path)
 
-        #Remove old backups
-        ftp.cwd(remote_path)
-        for file in ftp.nlst():
-            ftp.delete(file)
-            
-        #Push new backups
-        for filename in filenames:
-            ftp.put(os.path.join(dirpath, filename), os.path.join(remote_path, filename))
-    ftp.close()
+    chemin_repertoire_source = "/home/ubuntu/backups/odoo_backups/"
+    chemin_repertoire_destination = os.path.join("duplicate_backups")
+
+    try:
+        # Supprimer le répertoire de destination s'il existe déjà
+        commande_suppression = f'rm -rf {chemin_repertoire_destination}'
+        ssh.exec_command(commande_suppression)
+
+        # Utiliser SCP pour copier les fichiers du répertoire source vers le répertoire destination
+        scp = SCPClient(ssh.get_transport())
+        scp.put(chemin_repertoire_source, recursive=True, remote_path=chemin_repertoire_destination)
+
+    finally:
+        # Fermer la connexion SSH
+        ssh.close()
+
 
 backup_type = get_file_params()
 
@@ -104,6 +106,9 @@ backup_type = get_file_params()
 
 logger = create_logfile()
 backup_dbs = get_db_to_backup()
+
+push_to_synology(logger)
+
 
 for backup_db in backup_dbs:
     db_info =  {
