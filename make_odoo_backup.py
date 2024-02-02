@@ -3,6 +3,8 @@ import os, time, logging, subprocess
 import argparse
 from dotenv import load_dotenv
 import paramiko
+import shutil
+import glob
 
 load_dotenv()
 ODOO_URL = os.getenv('ODOO_URL')
@@ -14,6 +16,13 @@ SYNOLOGY_URL = os.getenv('SYNOLOGY_URL')
 SYNOLOGY_USERNAME = os.getenv('SYNOLOGY_USERNAME')
 SYNOLOGY_PASSWORD = os.getenv('SYNOLOGY_PASSWORD')
 now = time.time()
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.FileHandler(f"{__name__}.log", mode='w')
+formatter = logging.Formatter("%(name)s %(asctime)s %(levelname)s %(message)s")
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 def get_file_params():
     argParser = argparse.ArgumentParser()
@@ -31,18 +40,6 @@ def get_db_to_backup():
     models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(ODOO_URL))
     ids = models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, 'project.task', 'search', [[('tag_ids.name', '=', "To backup")]],)
     return models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD,'project.task', 'read', [ids], {'fields': ['name']})
-
-def create_logfile():
-    log_path = BACKUP_PATH + "/log"
-    os.makedirs(log_path, exist_ok=True)
-    if not os.path.exists(log_path + "/daily_backup.log"):
-        open(log_path + "/daily_backup.log", 'w').close()
-    logging.basicConfig(filename=log_path + "/daily_backup.log",
-                        filemode="w",
-                        format='%(asctime)s %(levelname)-8s %(message)s',
-                        level=logging.INFO,
-                        datefmt='%Y-%m-%d %H:%M:%S')
-    return logging.getLogger()
 
 def make_backup(db_info, backup_type):
     if not os.path.isdir(db_info['backup_root_path']):
@@ -73,48 +70,53 @@ def remove_old_backup(db_info,backup_type):
         if filestamp <  critical_time:
             os.remove(os.path.join(db_info['backup_root_path'], filename))
 
-def push_to_synology(logger):
+def push_to_synology():
+
+    #Creating the ZIP
+
+    logger.info('Creating the ZIP file on %s' % (BACKUP_PATH))
+    zip_filename = 'backups_%s' % time.strftime('%Y_%m_%d_%H_%M')
+    shutil.make_archive(BACKUP_PATH+'/'+zip_filename, 'zip', BACKUP_PATH)
+
+    # Connect the NAS
+
     logger.info('Connect to %s' % (SYNOLOGY_URL))
-    client = paramiko.client.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(SYNOLOGY_URL, username=SYNOLOGY_USERNAME, password=SYNOLOGY_PASSWORD)
+    ssh = paramiko.client.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(SYNOLOGY_URL, username=SYNOLOGY_USERNAME, password=SYNOLOGY_PASSWORD,allow_agent=False,
+                look_for_keys=False)
+
+    # Send the ZIP
 
     logger.info('Send backups to %s' % (SYNOLOGY_URL))
-    ftp = client.open_sftp()
-    for dirpath, dirnames, filenames in os.walk(BACKUP_PATH):
-        remote_path = os.path.join("duplicate_backups", dirpath[len(BACKUP_PATH)+1:])
-        try:
-            ftp.listdir(remote_path)
-        except IOError:
-            ftp.mkdir(remote_path)
-
-        #Remove old backups
-        ftp.cwd(remote_path)
-        for file in ftp.nlst():
-            ftp.delete(file)
-            
-        #Push new backups
-        for filename in filenames:
-            ftp.put(os.path.join(dirpath, filename), os.path.join(remote_path, filename))
+    ftp = ssh.open_sftp()
+    print(BACKUP_PATH+'/'+zip_filename+'.zip')
+    ftp.put(BACKUP_PATH+'/'+zip_filename+'.zip', 'Backup/'+zip_filename+'.zip')
     ftp.close()
 
-backup_type = get_file_params()
+    # Remove ZIP backup on source
 
-#Let's backups
+    file_path = BACKUP_PATH+'/*.zip'
+    for file in glob.glob(file_path):
+        os.remove(file)
 
-logger = create_logfile()
-backup_dbs = get_db_to_backup()
 
-for backup_db in backup_dbs:
-    db_info =  {
-        "backup_db_url" : backup_db['name'],
-        "backup_root_path" : BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
-    }
-    make_backup(db_info, backup_type)
-    remove_old_backup(db_info, backup_type)
+def main():
+    backup_type = get_file_params()
+    backup_dbs = get_db_to_backup()
 
-push_to_synology(logger)
-    
+    for backup_db in backup_dbs:
+        db_info =  {
+            "backup_db_url" : backup_db['name'],
+            "backup_root_path" : BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
+        }
+        make_backup(db_info, backup_type)
+        remove_old_backup(db_info, backup_type)
+
+    push_to_synology()
+
+if __name__ == '__main__':
+    main()
 
 
 
