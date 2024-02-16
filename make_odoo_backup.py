@@ -88,9 +88,16 @@ def push_to_synology():
 
     # Send the ZIP
 
-    logger.info('Send backups to %s' % (SYNOLOGY_URL))
+    logger.info('Remove old backups to %s' % (SYNOLOGY_URL))
     ftp = ssh.open_sftp()
     print(BACKUP_PATH+'/'+zip_filename+'.zip')
+
+    
+    filesInRemoteArtifacts = ftp.listdir(path='Backup/')
+    for file in filesInRemoteArtifacts:
+        ftp.remove(remoteArtifactPath+file)
+
+    logger.info('Send backups to %s' % (SYNOLOGY_URL))
     ftp.put(BACKUP_PATH+'/'+zip_filename+'.zip', 'Backup/'+zip_filename+'.zip')
     ftp.close()
 
