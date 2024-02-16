@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import paramiko
 import shutil
 import glob
+from stat import S_ISDIR, S_ISREG
 
 load_dotenv()
 ODOO_URL = os.getenv('ODOO_URL')
@@ -92,10 +93,10 @@ def push_to_synology():
     ftp = ssh.open_sftp()
     print(BACKUP_PATH+'/'+zip_filename+'.zip')
 
-    
-    filesInRemoteArtifacts = ftp.listdir(path='Backup/')
-    for file in filesInRemoteArtifacts:
-        ftp.remove(remoteArtifactPath+file)
+    filesInRemoteArtifacts = ftp.listdir_attr(path='Backup/')
+    print(filesInRemoteArtifacts)
+    for file in filter(lambda f : S_ISREG(f.st_mode), filesInRemoteArtifacts):
+        ftp.remove('Backup/'+file.filename)
 
     logger.info('Send backups to %s' % (SYNOLOGY_URL))
     ftp.put(BACKUP_PATH+'/'+zip_filename+'.zip', 'Backup/'+zip_filename+'.zip')
@@ -113,12 +114,12 @@ def main():
     backup_dbs = get_db_to_backup()
 
     for backup_db in backup_dbs:
-        db_info =  {
-            "backup_db_url" : backup_db['name'],
-            "backup_root_path" : BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
-        }
-        make_backup(db_info, backup_type)
-        remove_old_backup(db_info, backup_type)
+       db_info =  {
+           "backup_db_url" : backup_db['name'],
+           "backup_root_path" : BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
+       }
+       make_backup(db_info, backup_type)
+      remove_old_backup(db_info, backup_type)
 
     push_to_synology()
 
