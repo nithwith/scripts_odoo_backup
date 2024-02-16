@@ -114,12 +114,12 @@ def main():
     backup_dbs = get_db_to_backup()
 
     for backup_db in backup_dbs:
-       db_info =  {
-           "backup_db_url" : backup_db['name'],
-           "backup_root_path" : BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
-       }
-       make_backup(db_info, backup_type)
-      remove_old_backup(db_info, backup_type)
+        db_info ={
+           "backup_db_url": backup_db['name'],
+           "backup_root_path": BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
+        }
+    make_backup(db_info, backup_type)
+    remove_old_backup(db_info, backup_type)
 
     push_to_synology()
 
