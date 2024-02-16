@@ -118,8 +118,8 @@ def main():
            "backup_db_url": backup_db['name'],
            "backup_root_path": BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
         }
-    make_backup(db_info, backup_type)
-    remove_old_backup(db_info, backup_type)
+        make_backup(db_info, backup_type)
+        remove_old_backup(db_info, backup_type)
 
     push_to_synology()
 
