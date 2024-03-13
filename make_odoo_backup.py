@@ -13,6 +13,7 @@ ODOO_DB = os.getenv('ODOO_DB')
 ODOO_USERNAME = os.getenv('ODOO_USERNAME')
 ODOO_PASSWORD = os.getenv('ODOO_PASSWORD')
 BACKUP_PATH = os.getenv('BACKUP_PATH')
+BACKUP_ZIP_PATH = os.getenv('BACKUP_ZIP_PATH')
 SYNOLOGY_URL = os.getenv('SYNOLOGY_URL')
 SYNOLOGY_USERNAME = os.getenv('SYNOLOGY_USERNAME')
 SYNOLOGY_PASSWORD = os.getenv('SYNOLOGY_PASSWORD')
@@ -77,7 +78,7 @@ def push_to_synology():
 
     logger.info('Creating the ZIP file on %s' % (BACKUP_PATH))
     zip_filename = 'backups_%s' % time.strftime('%Y_%m_%d_%H_%M')
-    shutil.make_archive(BACKUP_PATH+'/'+zip_filename, 'zip', BACKUP_PATH)
+    shutil.make_archive(BACKUP_ZIP_PATH+'/'+zip_filename, 'zip', BACKUP_ZIP_PATH)
 
     # Connect the NAS
 
@@ -91,7 +92,7 @@ def push_to_synology():
 
     logger.info('Remove old backups to %s' % (SYNOLOGY_URL))
     ftp = ssh.open_sftp()
-    print(BACKUP_PATH+'/'+zip_filename+'.zip')
+    print(BACKUP_ZIP_PATH+'/'+zip_filename+'.zip')
 
     filesInRemoteArtifacts = ftp.listdir_attr(path='Backup/')
     print(filesInRemoteArtifacts)
@@ -99,12 +100,12 @@ def push_to_synology():
         ftp.remove('Backup/'+file.filename)
 
     logger.info('Send backups to %s' % (SYNOLOGY_URL))
-    ftp.put(BACKUP_PATH+'/'+zip_filename+'.zip', 'Backup/'+zip_filename+'.zip')
+    ftp.put(BACKUP_ZIP_PATH+'/'+zip_filename+'.zip', 'Backup/'+zip_filename+'.zip')
     ftp.close()
 
     # Remove ZIP backup on source
 
-    file_path = BACKUP_PATH+'/*.zip'
+    file_path = BACKUP_ZIP_PATH+'/*.zip'
     for file in glob.glob(file_path):
         os.remove(file)
 
