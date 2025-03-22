@@ -12,13 +12,11 @@ Then install python dependency
 ### Execution
 Finaly execute the backup script with a cron
 
-``` python3 make_odoo_backup.py -p daily	```
-or
-``` python3 make_odoo_backup.py -p monthly	```
+``` python3 make_odoo_backup.py	```
 
 
 ### Cron job
 You can had a cron job for automate the backup every days at 18h.
 
-``` 00 18 * * * python3 /home/XX/backups/odoo_backup_scripts/make_odoo_backup.py -p daily``` 
+``` 00 18 * * * python3 /home/XX/backups/odoo_backup_scripts/make_odoo_backup.py ``` 
 
