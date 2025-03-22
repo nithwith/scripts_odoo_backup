@@ -1,17 +1,17 @@
 import xmlrpc.client
 import os, time, logging, subprocess
-import dotenv
-dotenv.load_dotenv()
+from dotenv import main
 
+main.load_dotenv()
 
-ODOO_URL = os.environ.get('ODOO_URL')
-ODOO_DB = os.environ.get('ODOO_DB')
-ODOO_USERNAME = os.environ.get('ODOO_USERNAME')
-ODOO_PASSWORD = os.environ.get('ODOO_PASSWORD')
-BACKUP_PATH = os.environ.get('BACKUP_PATH')
-# SYNOLOGY_URL = os.environ.get('SYNOLOGY_URL')
-# SYNOLOGY_USERNAME = os.environ.get('SYNOLOGY_USERNAME')
-# SYNOLOGY_PASSWORD = os.environ.get('SYNOLOGY_PASSWORD')
+ODOO_URL = os.getenv('ODOO_URL')
+ODOO_DB = os.getenv('ODOO_DB')
+ODOO_USERNAME = os.getenv('ODOO_USERNAME')
+ODOO_PASSWORD = os.getenv('ODOO_PASSWORD')
+BACKUP_PATH = os.getenv('BACKUP_PATH')
+# SYNOLOGY_URL = os.getenv('SYNOLOGY_URL')
+# SYNOLOGY_USERNAME = os.getenv('SYNOLOGY_USERNAME')
+# SYNOLOGY_PASSWORD = os.getenv('SYNOLOGY_PASSWORD')
 now = time.time()
 
 logger = logging.getLogger(__name__)
