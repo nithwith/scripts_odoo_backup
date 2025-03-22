@@ -1,6 +1,7 @@
 import xmlrpc.client
 import os, time, logging, subprocess
 from dotenv import main
+import argparse
 
 main.load_dotenv()
 
@@ -21,15 +22,15 @@ formatter = logging.Formatter("%(name)s %(asctime)s %(levelname)s %(message)s")
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-# def get_file_params():
-#     argParser = argparse.ArgumentParser()
-#     argParser.add_argument("-p", "--period", help="Period of your backup")
-#     args = argParser.parse_args()
-#     if args.period in ['daily','monthly']:
-#         backup_type = args.period
-#     else:
-#         raise Exception("You need to send the period of the backup (daily or monthly) with -p argument")
-#     return backup_type
+def get_file_params():
+    argParser = argparse.ArgumentParser()
+    argParser.add_argument("-p", "--period", help="Period of your backup")
+    args = argParser.parse_args()
+    if args.period in ['daily','monthly']:
+        backup_type = args.period
+    else:
+        raise Exception("You need to send the period of the backup (daily or monthly) with -p argument")
+    return backup_type
     
 def get_db_to_backup():
     common = xmlrpc.client.ServerProxy('{}/xmlrpc/2/common'.format(ODOO_URL))
@@ -106,7 +107,7 @@ def remove_old_backup(db_info, backup_type):
 
 
 def main():
-    backup_type = "daily"
+    backup_type = get_file_params()
     backup_dbs = get_db_to_backup()
 
     for backup_db in backup_dbs:
