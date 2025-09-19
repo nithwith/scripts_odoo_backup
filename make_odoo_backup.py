@@ -44,15 +44,15 @@ def make_backup(db_info, backup_type):
         os.makedirs(db_info['backup_root_path'])
 
     # db_info['backup_root_path'] = db_info['backup_root_path'] + "/"
-    backup_path = db_info['backup_root_path'] + '%s_%s.zip' % (db_info['backup_db_url'], time.strftime('%Y_%m_%d_%H_%M_%S'))
+    backup_path = db_info['backup_root_path'] + '%s_%s.dump' % (db_info['backup_db_url'], time.strftime('%Y_%m_%d_%H_%M_%S'))
     backup_url = 'https://'+db_info['backup_db_url']+"/web/database/backup"
 
-    subprocess.run(["curl", "-X", "POST", '-F', 'master_pwd=pPaJncYL8MgqSt', '-F', 'name=odoo', '-F', 'backup_format=zip', '-o', 
+    subprocess.run(["curl", "-X", "POST", '-F', 'master_pwd=pPaJncYL8MgqSt', '-F', 'name=odoo', '-F', 'backup_format=dump', '-o', 
                     backup_path, backup_url],stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT)
     logger.info('Let s %s Backup %s' % (backup_type, db_info['backup_db_url']))
 
 
-    if subprocess.run(["curl", "-X", "POST", '-F', 'master_pwd=pPaJncYL8MgqSt', '-F', 'name=odoo' '-F', 'backup_format=zip', '-o', 
+    if subprocess.run(["curl", "-X", "POST", '-F', 'master_pwd=pPaJncYL8MgqSt', '-F', 'name=odoo' '-F', 'backup_format=dump', '-o', 
                        backup_path, backup_url],stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT).returncode == 0:
         logger.info('End of %s %s Backup' % (backup_type, db_info['backup_db_url']))
         return db_info
