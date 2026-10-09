@@ -1,131 +1,197 @@
-import xmlrpc.client
-import os, time, logging, subprocess
-from dotenv import main
+"""Download validated Odoo backups before rotating older copies."""
+
 import argparse
+from datetime import datetime
+import fcntl
+import json
+import logging
+import os
+from pathlib import Path
+import re
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+import xmlrpc.client
+import zipfile
 
-main.load_dotenv()
+from dotenv import load_dotenv
 
-ODOO_URL = os.getenv('ODOO_URL')
-ODOO_DB = os.getenv('ODOO_DB')
-ODOO_USERNAME = os.getenv('ODOO_USERNAME')
-ODOO_PASSWORD = os.getenv('ODOO_PASSWORD')
-BACKUP_PATH = os.getenv('BACKUP_PATH')
-# SYNOLOGY_URL = os.getenv('SYNOLOGY_URL')
-# SYNOLOGY_USERNAME = os.getenv('SYNOLOGY_USERNAME')
-# SYNOLOGY_PASSWORD = os.getenv('SYNOLOGY_PASSWORD')
-now = time.time()
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-handler = logging.FileHandler(f"{__name__}.log", mode='w')
-formatter = logging.Formatter("%(name)s %(asctime)s %(levelname)s %(message)s")
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+REQUIRED_ENV = (
+    "ODOO_URL", "ODOO_DB", "ODOO_USERNAME", "ODOO_PASSWORD",
+    "ODOO_MASTER_PASSWORD", "BACKUP_PATH",
+)
+HOST_PATTERN = re.compile(
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?::[0-9]{1,5})?"
+)
+
 
 def get_file_params():
-    argParser = argparse.ArgumentParser()
-    argParser.add_argument("-p", "--period", help="Period of your backup")
-    args = argParser.parse_args()
-    if args.period in ['daily','monthly']:
-        backup_type = args.period
-    else:
-        raise Exception("You need to send the period of the backup (daily or monthly) with -p argument")
-    return backup_type
-    
-def get_db_to_backup():
-    common = xmlrpc.client.ServerProxy('{}/xmlrpc/2/common'.format(ODOO_URL))
-    uid = common.authenticate(ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, {})
-    models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(ODOO_URL))
-    ids = models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, 'project.task', 'search', [[('tag_ids.name', '=', "To backup")]],)
-    return models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD,'project.task', 'read', [ids], {'fields': ['name']})
-
-def make_backup(db_info, backup_type):
-    if not os.path.isdir(db_info['backup_root_path']):
-        os.makedirs(db_info['backup_root_path'])
-
-    # db_info['backup_root_path'] = db_info['backup_root_path'] + "/"
-    backup_path = db_info['backup_root_path'] + '%s_%s.dump' % (db_info['backup_db_url'], time.strftime('%Y_%m_%d_%H_%M_%S'))
-    backup_url = 'https://'+db_info['backup_db_url']+"/web/database/backup"
-
-    subprocess.run(["curl", "-X", "POST", '-F', 'master_pwd=pPaJncYL8MgqSt', '-F', 'name=odoo', '-F', 'backup_format=dump', '-o', 
-                    backup_path, backup_url],stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT)
-    logger.info('Let s %s Backup %s' % (backup_type, db_info['backup_db_url']))
+    """Require an explicit daily or monthly backup period."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-p", "--period", required=True,
+                        choices=("daily", "monthly"))
+    return parser.parse_args().period
 
 
-    if subprocess.run(["curl", "-X", "POST", '-F', 'master_pwd=pPaJncYL8MgqSt', '-F', 'name=odoo' '-F', 'backup_format=dump', '-o', 
-                       backup_path, backup_url],stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT).returncode == 0:
-        logger.info('End of %s %s Backup' % (backup_type, db_info['backup_db_url']))
-        return db_info
-    
+def load_config():
+    """Fail before doing any work when credentials or storage are missing."""
+    load_dotenv(Path(__file__).resolve().with_name(".env"))
+    config = {key: os.getenv(key) for key in REQUIRED_ENV}
+    missing = [key for key, value in config.items() if not value]
+    if missing:
+        raise ValueError("Missing configuration: " + ", ".join(missing))
+    if not config["ODOO_URL"].startswith("https://"):
+        raise ValueError("ODOO_URL must use HTTPS")
+    backup_path = Path(config["BACKUP_PATH"])
+    if not backup_path.is_absolute():
+        raise ValueError("BACKUP_PATH must be absolute")
+    config["BACKUP_PATH"] = backup_path.resolve()
+    if not config["BACKUP_PATH"].is_dir():
+        raise ValueError("BACKUP_PATH must be an existing backup directory")
+    config["ODOO_BACKUP_DB"] = os.getenv("ODOO_BACKUP_DB") or "odoo"
+    return config
+
+
+def get_db_to_backup(config):
+    """Read instance hostnames from project tasks tagged To backup."""
+    url = config["ODOO_URL"].rstrip("/")
+    common = xmlrpc.client.ServerProxy(url + "/xmlrpc/2/common")
+    uid = common.authenticate(config["ODOO_DB"], config["ODOO_USERNAME"],
+                              config["ODOO_PASSWORD"], {})
+    if not uid:
+        raise ValueError("Odoo authentication failed")
+    models = xmlrpc.client.ServerProxy(url + "/xmlrpc/2/object")
+    return models.execute_kw(
+        config["ODOO_DB"], uid, config["ODOO_PASSWORD"],
+        "project.task", "search_read", [[("tag_ids.name", "=", "To backup")]],
+        {"fields": ["name"]},
+    )
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Reject redirects rather than forwarding database credentials."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def validate_backup(path, database):
+    """Check ZIP CRCs and the expected Odoo database/manifest members."""
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        if names.count("dump.sql") != 1 or names.count("manifest.json") != 1:
+            raise ValueError("Backup is missing unique dump.sql/manifest.json")
+        if archive.getinfo("dump.sql").file_size == 0:
+            raise ValueError("Database dump is empty")
+        if archive.testzip() is not None:
+            raise ValueError("Backup ZIP failed its integrity check")
+        manifest = json.loads(archive.read("manifest.json"))
+        if not isinstance(manifest, dict) or manifest.get("db_name") != database:
+            raise ValueError("Backup manifest does not match the requested database")
+
+
+def make_backup(db_info, backup_type, config):
+    """Send one POST and publish the ZIP only after successful validation."""
+    root = Path(db_info["backup_root_path"])
+    root.mkdir(parents=True, exist_ok=True)
+    host = db_info["backup_db_url"]
+    filename = host + "_" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S_%f") + ".zip"
+    destination = root / filename
+    payload = urllib.parse.urlencode({
+        "master_pwd": config["ODOO_MASTER_PASSWORD"],
+        "name": config["ODOO_BACKUP_DB"],
+        "backup_format": "zip",
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "https://" + host + "/web/database/backup", data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    opener = urllib.request.build_opener(NoRedirect())
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=root, suffix=".part", delete=False) as output:
+            temporary = Path(output.name)
+            with opener.open(request, timeout=300) as response:
+                if response.status != 200:
+                    raise ValueError("Unexpected backup HTTP status")
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        validate_backup(temporary, config["ODOO_BACKUP_DB"])
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    logger.info("Validated %s backup for %s", backup_type, host)
+    return destination
+
+
 def remove_old_backup(db_info, backup_type):
-    logger.info('Remove old %s backup of %s' % (backup_type, db_info['backup_db_url']))
-    for filename in os.listdir(db_info['backup_root_path']):
-        filestamp = os.stat(os.path.join(db_info['backup_root_path'], filename)).st_mtime
-        if backup_type == "daily":
-            critical_time = now - 5 * 86400 #5 days
-        else:
-            critical_time = now - 155 * 86400 #5 month
-        if filestamp <  critical_time:
-            os.remove(os.path.join(db_info['backup_root_path'], filename))
+    """Keep the existing age policy, deleting only recognized backup files."""
+    root = Path(db_info["backup_root_path"])
+    pattern = re.compile(
+        re.escape(db_info["backup_db_url"])
+        + r"_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}(?:_\d{6})?\.(?:zip|dump)"
+    )
+    days = 5 if backup_type == "daily" else 155
+    cutoff = time.time() - days * 86400
+    for path in root.iterdir():
+        if (pattern.fullmatch(path.name) and not path.is_symlink()
+                and path.is_file() and path.stat().st_mtime < cutoff):
+            path.unlink()
+            logger.info("Removed old %s backup: %s", backup_type, path.name)
 
-# def push_to_synology():
 
-#     #Creating the ZIP
-
-#     logger.info('Creating the ZIP file on %s' % (BACKUP_PATH))
-#     zip_filename = 'backups_%s' % time.strftime('%Y_%m_%d_%H_%M')
-#     shutil.make_archive(BACKUP_PATH+'/'+zip_filename, 'zip', BACKUP_PATH)
-
-#     # Connect the NAS
-
-#     logger.info('Connect to %s' % (SYNOLOGY_URL))
-#     ssh = paramiko.client.SSHClient()
-#     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-#     ssh.connect(SYNOLOGY_URL, username=SYNOLOGY_USERNAME, password=SYNOLOGY_PASSWORD,allow_agent=False,
-#                 look_for_keys=False)
-
-#     # Send the ZIP
-
-#     logger.info('Remove old backups to %s' % (SYNOLOGY_URL))
-#     ftp = ssh.open_sftp()
-#     print(BACKUP_PATH+'/'+zip_filename+'.zip')
-
-#     filesInRemoteArtifacts = ftp.listdir_attr(path='Backup/')
-#     print(filesInRemoteArtifacts)
-#     for file in filter(lambda f : S_ISREG(f.st_mode), filesInRemoteArtifacts):
-#         ftp.remove('Backup/'+file.filename)
-
-#     logger.info('Send backups to %s' % (SYNOLOGY_URL))
-#     ftp.put(BACKUP_PATH+'/'+zip_filename+'.zip', 'Backup/'+zip_filename+'.zip')
-#     ftp.close()
-
-#     # Remove ZIP backup on source
-
-#     file_path = BACKUP_PATH+'/*.zip'
-#     for file in glob.glob(file_path):
-#         os.remove(file)
+def backup_instances(backup_dbs, backup_type, config):
+    """Continue after an instance fails and report an overall failing status."""
+    failed = False
+    for backup_db in backup_dbs:
+        host = backup_db["name"]
+        if not isinstance(host, str) or not HOST_PATTERN.fullmatch(host):
+            logger.error("Invalid instance hostname in task %s", backup_db.get("id"))
+            failed = True
+            continue
+        db_info = {
+            "backup_db_url": host,
+            "backup_root_path": config["BACKUP_PATH"] / host / backup_type,
+        }
+        try:
+            make_backup(db_info, backup_type, config)
+            remove_old_backup(db_info, backup_type)
+        except Exception:  # Each failed instance must preserve its previous backups.
+            logger.error("Backup or rotation failed for %s; check storage and Odoo", host)
+            failed = True
+    return 1 if failed else 0
 
 
 def main():
+    """Run under a storage-wide lock and return a status suitable for cron."""
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s")
     backup_type = get_file_params()
-    backup_dbs = get_db_to_backup()
-
-    for backup_db in backup_dbs:
-        db_info ={
-           "backup_db_url": backup_db['name'],
-           "backup_root_path": BACKUP_PATH +"/"+ backup_db['name'] + "/"+ backup_type + "/"
-        }
-        make_backup(db_info, backup_type)
-        remove_old_backup(db_info, backup_type)
-
-    # push_to_synology()
-
-if __name__ == '__main__':
-    main()
-
+    try:
+        config = load_config()
+        with (config["BACKUP_PATH"] / ".backup.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            backup_dbs = get_db_to_backup(config)
+            if not backup_dbs:
+                logger.error("No instances tagged To backup; nothing was backed up")
+                return 1
+            return backup_instances(backup_dbs, backup_type, config)
+    except Exception as error:
+        logger.error("Backup run failed (%s); check configuration, lock, storage and Odoo",
+                     type(error).__name__)
+        return 1
 
 
-
-
-
-
+if __name__ == "__main__":
+    raise SystemExit(main())
