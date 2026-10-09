@@ -3,3 +3,4 @@ backup
 .vscode
 *.log
 .idea
+__pycache__/
