@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xmlrpc.client
@@ -34,7 +35,8 @@ def get_file_params():
     parser = argparse.ArgumentParser()
     parser.add_argument("-p", "--period", required=True,
                         choices=("daily", "monthly"))
-    return parser.parse_args().period
+    parser.add_argument("--instance", help="Back up only this exact task hostname")
+    return parser.parse_args()
 
 
 def load_config():
@@ -53,6 +55,9 @@ def load_config():
     if not config["BACKUP_PATH"].is_dir():
         raise ValueError("BACKUP_PATH must be an existing backup directory")
     config["ODOO_BACKUP_DB"] = os.getenv("ODOO_BACKUP_DB") or "odoo"
+    config["ODOO_BACKUP_TIMEOUT"] = int(os.getenv("ODOO_BACKUP_TIMEOUT") or "300")
+    if config["ODOO_BACKUP_TIMEOUT"] <= 0:
+        raise ValueError("ODOO_BACKUP_TIMEOUT must be a positive number of seconds")
     return config
 
 
@@ -96,6 +101,7 @@ def validate_backup(path, database):
 
 def make_backup(db_info, backup_type, config):
     """Send one POST and publish the ZIP only after successful validation."""
+    db_info["stage"] = "preparing destination"
     root = Path(db_info["backup_root_path"])
     root.mkdir(parents=True, exist_ok=True)
     host = db_info["backup_db_url"]
@@ -112,11 +118,16 @@ def make_backup(db_info, backup_type, config):
         method="POST",
     )
     opener = urllib.request.build_opener(NoRedirect())
+    timeout = config.get("ODOO_BACKUP_TIMEOUT", 300)
     temporary = None
+    db_info["bytes_received"] = 0
+    logger.info("Starting %s backup for %s (socket timeout: %ss)",
+                backup_type, host, timeout)
     try:
         with tempfile.NamedTemporaryFile(dir=root, suffix=".part", delete=False) as output:
             temporary = Path(output.name)
-            with opener.open(request, timeout=300) as response:
+            db_info["stage"] = "download"
+            with opener.open(request, timeout=timeout) as response:
                 if response.status != 200:
                     raise ValueError("Unexpected backup HTTP status")
                 while True:
@@ -124,15 +135,31 @@ def make_backup(db_info, backup_type, config):
                     if not chunk:
                         break
                     output.write(chunk)
+                    db_info["bytes_received"] += len(chunk)
             output.flush()
             os.fsync(output.fileno())
+        logger.info("Downloaded %s bytes for %s; validating ZIP",
+                    db_info["bytes_received"], host)
+        db_info["stage"] = "ZIP validation"
         validate_backup(temporary, config["ODOO_BACKUP_DB"])
+        db_info["stage"] = "publication"
         os.replace(temporary, destination)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     logger.info("Validated %s backup for %s", backup_type, host)
     return destination
+
+
+def error_details(error):
+    """Describe failures without logging credentials or server response bodies."""
+    if isinstance(error, urllib.error.HTTPError):
+        return "HTTP " + str(error.code)
+    if isinstance(error, urllib.error.URLError):
+        return "URL error (" + type(error.reason).__name__ + ")"
+    if isinstance(error, OSError) and error.errno is not None:
+        return type(error).__name__ + " (errno " + str(error.errno) + ")"
+    return type(error).__name__
 
 
 def remove_old_backup(db_info, backup_type):
@@ -163,12 +190,18 @@ def backup_instances(backup_dbs, backup_type, config):
         db_info = {
             "backup_db_url": host,
             "backup_root_path": config["BACKUP_PATH"] / host / backup_type,
+            "stage": "preparation",
+            "bytes_received": 0,
         }
+        started = time.monotonic()
         try:
             make_backup(db_info, backup_type, config)
+            db_info["stage"] = "rotation"
             remove_old_backup(db_info, backup_type)
-        except Exception:  # Each failed instance must preserve its previous backups.
-            logger.error("Backup or rotation failed for %s; check storage and Odoo", host)
+        except Exception as error:
+            logger.error("Failed for %s during %s after %.1fs (%s bytes received): %s",
+                         host, db_info["stage"], time.monotonic() - started,
+                         db_info["bytes_received"], error_details(error))
             failed = True
     return 1 if failed else 0
 
@@ -177,16 +210,18 @@ def main():
     """Run under a storage-wide lock and return a status suitable for cron."""
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-    backup_type = get_file_params()
+    args = get_file_params()
     try:
         config = load_config()
         with (config["BACKUP_PATH"] / ".backup.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             backup_dbs = get_db_to_backup(config)
+            if args.instance:
+                backup_dbs = [task for task in backup_dbs if task["name"] == args.instance]
             if not backup_dbs:
-                logger.error("No instances tagged To backup; nothing was backed up")
+                logger.error("No matching instances tagged To backup; nothing was backed up")
                 return 1
-            return backup_instances(backup_dbs, backup_type, config)
+            return backup_instances(backup_dbs, args.period, config)
     except Exception as error:
         logger.error("Backup run failed (%s); check configuration, lock, storage and Odoo",
                      type(error).__name__)

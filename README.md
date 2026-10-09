@@ -21,6 +21,9 @@ chmod 600 .env
   instances, separate from the personal Odoo user password. It is required;
   there is no hard-coded fallback. This version uses one shared master password.
 - `ODOO_BACKUP_DB`: database name on the target instances; defaults to `odoo`.
+- `ODOO_BACKUP_TIMEOUT`: positive socket timeout in seconds; defaults to 300.
+  For large databases this can be increased, e.g. to 1800. Proxy/server timeouts
+  are independent and cannot be increased by this setting.
 - `BACKUP_PATH`: existing absolute directory on the NAS or its mounted share.
   The script writes directly here; it does not perform a separate SFTP transfer.
 
@@ -38,6 +41,7 @@ Use a dedicated backup directory with restricted access.
 ```sh
 python3 make_odoo_backup.py -p daily
 python3 make_odoo_backup.py -p monthly
+python3 make_odoo_backup.py -p daily --instance customer.example.com
 ```
 
 Example cron entries (replace the paths with your installation):
@@ -52,13 +56,18 @@ working directory. An execution lock in `BACKUP_PATH` prevents overlapping runs.
 Daily and monthly jobs must have separate schedules; the script does not schedule
 itself. The monthly example runs on the first day of each month.
 
+The optional `--instance` filter selects an exact hostname from the tagged tasks.
+An unknown hostname fails without performing a backup or rotation. Logs record
+the start, downloaded byte count, and on failure the stage, duration and error
+type or HTTP status. Credentials and server response bodies are not logged.
+
 ## Backup and rotation guarantees
 
 - One HTTPS POST per instance to `/web/database/backup`, requesting `zip`.
   The ZIP includes PostgreSQL and the filestore when present in Odoo.
 - Master credentials are sent in the request body, not process arguments.
   HTTP errors and redirects fail the backup. The socket timeout is 300 seconds;
-  it is not a total execution deadline.
+  it is configurable with `ODOO_BACKUP_TIMEOUT`, not a total execution deadline.
 - Downloads go to a unique `.part` file in the destination directory.
   Before publication, the ZIP CRCs, non-empty `dump.sql`, and `manifest.json`
   database name are checked. The final `.zip` is published by atomic rename.

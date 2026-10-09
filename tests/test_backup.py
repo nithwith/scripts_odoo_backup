@@ -1,6 +1,7 @@
 """Regression tests for backup integrity and preservation on failure."""
 
 import io
+import argparse
 import json
 import os
 from pathlib import Path
@@ -214,7 +215,8 @@ class BackupTests(unittest.TestCase):
     def test_existing_lock_prevents_network(self):
         with (self.root / ".backup.lock").open("a") as lock:
             backup.fcntl.flock(lock, backup.fcntl.LOCK_EX | backup.fcntl.LOCK_NB)
-            with patch.object(backup, "get_file_params", return_value="daily"):
+            with patch.object(backup, "get_file_params",
+                              return_value=argparse.Namespace(period="daily", instance=None)):
                 with patch.object(backup, "load_config", return_value=self.config):
                     with patch.object(backup, "get_db_to_backup") as lookup:
                         with self.assertLogs(backup.logger, level="ERROR"):
@@ -228,6 +230,46 @@ class BackupTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), patch.object(backup, "load_dotenv"):
             with self.assertRaisesRegex(ValueError, "absolute"):
                 backup.load_config()
+
+    def test_configured_timeout_is_passed_to_download(self):
+        self.config["ODOO_BACKUP_TIMEOUT"] = 1800
+        context, opener = self.opener(zip_payload())
+        with context:
+            backup.make_backup(self.info, "daily", self.config)
+        self.assertEqual(opener.open.call_args.kwargs["timeout"], 1800)
+
+    def test_http_failure_log_includes_stage_without_secrets(self):
+        opener = Mock()
+        opener.open.side_effect = urllib.error.HTTPError(
+            "https://example.invalid", 504, self.config["ODOO_MASTER_PASSWORD"], {}, None
+        )
+        with patch.object(backup.urllib.request, "build_opener", return_value=opener):
+            with self.assertLogs(backup.logger, level="ERROR") as captured:
+                self.assertEqual(backup.backup_instances(self.tasks, "daily", self.config), 1)
+        message = " ".join(captured.output)
+        self.assertIn("during download", message)
+        self.assertIn("HTTP 504", message)
+        self.assertNotIn(self.config["ODOO_MASTER_PASSWORD"], message)
+
+    def test_instance_filter_only_selects_requested_task(self):
+        args = argparse.Namespace(period="daily", instance=self.host)
+        tasks = self.tasks + [{"name": "another.invalid"}]
+        with patch.object(backup, "get_file_params", return_value=args):
+            with patch.object(backup, "load_config", return_value=self.config):
+                with patch.object(backup, "get_db_to_backup", return_value=tasks):
+                    with patch.object(backup, "backup_instances", return_value=0) as run:
+                        self.assertEqual(backup.main(), 0)
+        run.assert_called_once_with(self.tasks, "daily", self.config)
+
+    def test_unknown_instance_fails_without_backup_or_rotation(self):
+        args = argparse.Namespace(period="daily", instance="missing.invalid")
+        with patch.object(backup, "get_file_params", return_value=args):
+            with patch.object(backup, "load_config", return_value=self.config):
+                with patch.object(backup, "get_db_to_backup", return_value=self.tasks):
+                    with patch.object(backup, "backup_instances") as run:
+                        with self.assertLogs(backup.logger, level="ERROR"):
+                            self.assertEqual(backup.main(), 1)
+                        run.assert_not_called()
 
 
 if __name__ == "__main__":
